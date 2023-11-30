@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +15,6 @@ import (
 	"github.com/hashicorp/vault-client-go"
 	"github.com/hashicorp/vault-client-go/schema"
 	"github.com/lestrrat-go/jwx/jwk"
-	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -54,7 +53,7 @@ func getJwksData(config *rest.Config) []byte {
 		panic(err.Error())
 	}
 
-	discoveryClient := clientset.RESTClient().Get().AbsPath("/.well-known/openid-configuration")
+	discoveryClient := clientset.CoreV1().RESTClient().Get().AbsPath("/.well-known/openid-configuration")
 	discoveryData, err := discoveryClient.DoRaw(context.Background())
 	if err != nil {
 		panic(err.Error())
@@ -67,24 +66,8 @@ func getJwksData(config *rest.Config) []byte {
 	}
 
 	jwksUri := discoveryDataInterface["jwks_uri"].(string)
-	endpoint, err := clientset.CoreV1().Endpoints("default").Get(context.Background(), "kubernetes", v1.GetOptions{})
-	if err != nil {
-		panic(err.Error())
-	}
-
-	var endpointAddress string
-	endpointScheme := endpoint.Subsets[0].Ports[0].Name
-	endpointAddresses := endpoint.Subsets[0].Addresses[0]
-	endpointPort := endpoint.Subsets[0].Ports[0].Port
-	if len(endpointAddresses.Hostname) > 0 {
-		endpointAddress = endpointAddresses.Hostname
-	} else {
-		endpointAddress = endpointAddresses.IP
-	}
-
-	endpointUri := fmt.Sprintf("%s://%s:%d", endpointScheme, endpointAddress, endpointPort)
-	jwksApiPath := strings.Split(jwksUri, endpointUri)[1]
-	jwksPayload := clientset.RESTClient().Get().AbsPath(jwksApiPath)
+	u, err := url.Parse(jwksUri)
+	jwksPayload := clientset.RESTClient().Get().AbsPath(u.Path)
 
 	jwksData, err := jwksPayload.DoRaw(context.Background())
 	if err != nil {
@@ -129,10 +112,11 @@ func (v *vaultAuthData) authenticate(ctx context.Context) *vault.Client {
 	switch authMethod := v.AuthMethod; authMethod {
 	case "azure":
 		var (
-			jwt string
-			rg  string
-			sub string
-			rId string
+			jwt      string
+			rg       string
+			sub      string
+			rId      string
+			vmssName string
 		)
 		httpClient := &http.Client{
 			Timeout: 5 * time.Second,
@@ -180,6 +164,9 @@ func (v *vaultAuthData) authenticate(ctx context.Context) *vault.Client {
 		if _, ok := msiPayload["resourceId"]; ok {
 			rId = msiPayload["resourceId"].(string)
 		}
+		if _, ok := msiPayload["vmScaleSetName"]; ok {
+			vmssName = msiPayload["vmScaleSetName"].(string)
+		}
 
 		vaultLogin, err := client.Auth.AzureLogin(ctx, schema.AzureLoginRequest{
 			Jwt:               jwt,
@@ -187,6 +174,7 @@ func (v *vaultAuthData) authenticate(ctx context.Context) *vault.Client {
 			ResourceGroupName: rg,
 			SubscriptionId:    sub,
 			ResourceId:        rId,
+			VmssName:          vmssName,
 		},
 			vault.WithMountPath(v.AuthMountPath),
 		)
