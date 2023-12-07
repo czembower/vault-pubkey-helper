@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"log"
@@ -82,14 +83,14 @@ func jwks2pem(jwksData []byte) string {
 	if err != nil {
 		log.Fatal("JWKS parsing failed")
 	} else {
-		log.Println("Successfully parsed JWKS:", string(jwksData))
+		log.Println("Successfully parsed JWKS public key")
 	}
 
 	pem, err := jwk.Pem(set)
 	if err != nil {
 		log.Fatal("PEM conversion failed")
 	} else {
-		log.Println("Sucessfully converted JWKS to PEM format:", strings.ReplaceAll(strings.TrimSpace(string(pem)), "\n", `\n`))
+		log.Println("Sucessfully converted JWKS to PEM format")
 	}
 	pemString := strings.TrimSpace(string(pem))
 
@@ -253,8 +254,10 @@ func main() {
 	var (
 		vaultAuthData          vaultAuthData
 		targetJwtAuthMountPath string
+		jwksPayload            string
 		installKey             bool
 		revokeKey              bool
+		jwksData               []byte
 	)
 	ctx := context.Background()
 
@@ -272,6 +275,7 @@ func main() {
 	flag.StringVar(&vaultAuthData.AuthRole, "vaultAuthRole", "", "Vault Auth Method role name")
 	flag.StringVar(&vaultAuthData.AuthJwt, "vaultAuthJwt", "", "JWT token to use while authenticating this application to Vault - valid for both JWT and Azure auth methods")
 	flag.StringVar(&targetJwtAuthMountPath, "targetJwtAuthMountPath", "", "The Auth Method mount path where the the new public key should be installed")
+	flag.StringVar(&jwksPayload, "jwksPayload", "", "Base64-encoded JWKS-formatted public key - if specified, the Kubernetes API actions will be skipped and this input will be used instead")
 	flag.BoolVar(&revokeKey, "revoke", false, "If true, the key will be revoked from the target Vault Auth Method")
 	flag.Parse()
 
@@ -285,14 +289,22 @@ func main() {
 		log.Fatal("A valid targetJwtAuthMountPath must be specified")
 	}
 
-	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
-	if err != nil {
-		log.Fatal("No valid kubeconfig found")
+	if jwksPayload == "" {
+		config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+		if err != nil {
+			log.Fatal("No valid kubeconfig found")
+		} else {
+			log.Println("Using kubeconfig:", *kubeconfig)
+		}
+		jwksData = getJwksData(config)
 	} else {
-		log.Println("Using kubeconfig:", *kubeconfig)
+		jwksPayloadDecoded, err := base64.StdEncoding.DecodeString(jwksPayload)
+		if err != nil {
+			log.Fatal("Unable to base64-decode JWKS payload")
+		}
+		jwksData = []byte(jwksPayloadDecoded)
 	}
 
-	jwksData := getJwksData(config)
 	pemString := jwks2pem(jwksData)
 
 	vaultClient := vaultAuthData.authenticate(ctx)
